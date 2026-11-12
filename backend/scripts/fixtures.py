@@ -5,10 +5,16 @@
 - 人数留存按 BASE_RETENTION 曲线（2025-11 基准群：M1 43.6%、M6 21.4%，
   M6 台阶对应「储值权益到期」这一已知业务事件）；
 - ARPU 留存按 exp(-GEN_LAMBDA·m) 衰减并带 ±20% 的月份/群波动，
-  后端的加权最小二乘会把它还原成 λ≈0.213、R²≈0.94；
-- 订单数由「格内营收 / 订单除数」推出，除数用二分法解到总量恰好 24,000 单，
-  保证 SEED_SUMMARY 的 orders=24000 是真实行数。
+  后端的加权最小二乘会把它还原成 λ≈0.213、R²≈0.94。
 
+储值制三类订单（order_type）：
+- consume 消费：由「格内营收 / 订单除数」推出，除数二分使消费单总量恰好 CONSUME_ORDERS；
+- recharge 充值：按会员终身消费额加缓冲生成，只形成待消费余额，永远不确认营收；
+- refund 退款：恒为负金额并关联原单，
+  退消费在退款发生月冲净营收（含跨月退款），退未核销充值只减余额。
+
+对账恒等式（逐会员 + 全局）：
+    充值 - 消费 - 退未核销充值 = 期末待消费余额
 所有随机量来自 sha256(key) 的确定性哈希，同参数重跑结果完全一致。
 """
 from __future__ import annotations
@@ -20,7 +26,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from src.constants.channels import CHANNEL_REVENUE_MULT, CHANNEL_SHARE
-from src.constants.enums import COHORT_CHANNELS
+from src.constants.enums import COHORT_CHANNELS, OrderType, RefundType
 
 COHORT_MONTHS: list[str] = [
     "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04",
@@ -40,9 +46,17 @@ GEN_LAMBDA = 0.2260
 REV_AMP = 0.200
 SALT = 11
 ARPU0 = 116.5291
-TOTAL_ORDERS = 24000
+CONSUME_ORDERS = 24000
+# 兼容旧引用：seed 摘要里的订单总数改为动态计算，保留常量名给文档对照
+TOTAL_ORDERS = CONSUME_ORDERS
 SNAPSHOT_MONTH = "2026-11"
 DEMO_PASSWORD = "Demo@2026"
+
+# 退款设计：约 1.6% 的消费单被退（同月或跨月），另退少量未核销充值
+REFUND_CONSUME_RATE = 0.016
+TOPUP_RATE = 0.10            # 10% 会员在观察期中段有一次追充值
+RECHARGE_BUFFER = 1.18       # 开卡充值相对终身消费的缓冲系数（留出待消费余额）
+RECHARGE_REFUND_RATE = 0.004
 
 STORE_PREFIX = "MY"
 STORE_COUNT = 380
@@ -138,7 +152,7 @@ def build_cells(arpu0: float = ARPU0) -> dict[tuple[int, int], CellPlan]:
     return cells
 
 
-def solve_order_divisor(cells: dict[tuple[int, int], CellPlan], target: int = TOTAL_ORDERS) -> float:
+def solve_order_divisor(cells: dict[tuple[int, int], CellPlan], target: int = CONSUME_ORDERS) -> float:
     """二分出订单除数 W，使 Σ max(active_ch, round(rev_ch / W)) == target。"""
 
     def total_for(divisor: float) -> int:
@@ -166,9 +180,9 @@ def cell_order_counts(cell: CellPlan, divisor: float) -> dict[str, int]:
 
 
 def solve_order_counts(
-    cells: dict[tuple[int, int], CellPlan], target: int = TOTAL_ORDERS
+    cells: dict[tuple[int, int], CellPlan], target: int = CONSUME_ORDERS
 ) -> dict[tuple[int, int, str], int]:
-    """先二分订单除数，再把取整漂移摊到最大的格子上，保证总量恰好等于 target。"""
+    """先二分订单除数，再把取整漂移摊到最大的格子上，保证消费单总量恰好等于 target。"""
     divisor = solve_order_divisor(cells, target)
     counts: dict[tuple[int, int, str], int] = {}
     for (i, m), cell in cells.items():
@@ -245,13 +259,27 @@ def order_timestamp(month: str, key: str) -> datetime:
     return datetime(year, mon, day, hour, 0, tzinfo=timezone.utc)
 
 
-def iter_orders(
+def _base_row(**kwargs: object) -> dict:
+    return {
+        "store_code": "",
+        "refund_order_no": None,
+        "refund_type": None,
+        "is_first_order": False,
+        **kwargs,
+    }
+
+
+def iter_consume_orders(
     cells: dict[tuple[int, int], CellPlan],
     counts_map: dict[tuple[int, int, str], int],
 ) -> list[dict]:
-    """展开成订单行（与 SEED_SUMMARY 的 orders=24000 严格一致）。"""
+    """展开消费订单行（总量恰好 CONSUME_ORDERS），同时返回会员终身消费额对照表。"""
     rows: list[dict] = []
     pools = {i: channel_member_pools(i) for i in range(len(COHORT_MONTHS))}
+    # 会员 -> 渠道（开卡渠道终身不变）
+    member_channel: dict[str, str] = {}
+    member_lifetime_consume: dict[str, int] = {}
+
     for (i, m), cell in sorted(cells.items()):
         cohort_month = COHORT_MONTHS[i]
         counts = {ch: counts_map[(i, m, ch)] for ch in COHORT_CHANNELS}
@@ -268,28 +296,221 @@ def iter_orders(
                 member = active_pool[j % len(active_pool)]
                 order_no = f"MO{i:02d}{m:02d}{COHORT_CHANNELS.index(channel) + 1}{j:05d}"
                 store_index = 1 + int(h01("store", key, j) * STORE_COUNT)
-                rows.append(
-                    {
-                        "order_no": order_no,
-                        "member_code": member,
-                        "cohort_month": cohort_month,
-                        "channel": channel,
-                        "store_code": f"{STORE_PREFIX}{store_index:03d}",
-                        "order_month": month,
-                        "month_index": m,
-                        "amount": Decimal(amount_cents) / Decimal(100),
-                        # 首轮订单覆盖每个活跃会员一次，这一轮才是「首单」
-                        "is_first_order": m == 0 and j < len(active_pool),
-                        "ordered_at": order_timestamp(month, order_no),
-                    }
+                member_channel.setdefault(member, channel)
+                member_lifetime_consume[member] = (
+                    member_lifetime_consume.get(member, 0) + amount_cents
                 )
+                rows.append(
+                    _base_row(
+                        order_no=order_no,
+                        member_code=member,
+                        cohort_month=cohort_month,
+                        channel=channel,
+                        store_code=f"{STORE_PREFIX}{store_index:03d}",
+                        order_type=OrderType.CONSUME.value,
+                        order_month=month,
+                        month_index=m,
+                        amount=Decimal(amount_cents) / Decimal(100),
+                        # 首轮订单覆盖每个活跃会员一次，这一轮才是「首单」
+                        is_first_order=m == 0 and j < len(active_pool),
+                        ordered_at=order_timestamp(month, order_no),
+                    )
+                )
+    return rows, member_channel, member_lifetime_consume
+
+
+def build_recharge_orders(
+    cells: dict[tuple[int, int], CellPlan],
+    member_channel: dict[str, str],
+    member_lifetime_consume: dict[str, int],
+) -> list[dict]:
+    """为每个会员生成开卡储值充值；部分会员追加一次中段充值。
+
+    充值额 ≥ 终身消费（含缓冲），保证任何时点余额不为负；充值只形成待消费余额。
+    金额单位在内部用「分」整数，落库转两位小数元。
+    """
+    rows: list[dict] = []
+    # 会员 -> 所属群 index
+    member_cohort: dict[str, int] = {}
+    for i, month in enumerate(COHORT_MONTHS):
+        for code in member_codes(i, COHORT_SIZES[i]):
+            member_cohort[code] = i
+
+    for member, lifetime_cents in sorted(member_lifetime_consume.items()):
+        i = member_cohort[member]
+        cohort_month = COHORT_MONTHS[i]
+        observed = len(BASE_RETENTION) - i
+        channel = member_channel[member]
+        # 开卡充值：终身消费 × 缓冲，取整到元，至少比终身消费多 1 元
+        open_cents = max(
+            lifetime_cents + 100,
+            int(math.ceil(lifetime_cents * RECHARGE_BUFFER / 100.0)) * 100,
+        )
+        open_no = f"RC{i:02d}00{member[-4:]}"
+        rows.append(
+            _base_row(
+                order_no=open_no,
+                member_code=member,
+                cohort_month=cohort_month,
+                channel=channel,
+                store_code=f"{STORE_PREFIX}{1 + int(h01('rstore', member) * STORE_COUNT):03d}",
+                order_type=OrderType.RECHARGE.value,
+                order_month=cohort_month,
+                month_index=0,
+                amount=Decimal(open_cents) / Decimal(100),
+                # 开卡即充值：对纯开卡会员这是第一笔订单（首单仍以消费 is_first_order 为准）
+                ordered_at=order_timestamp(cohort_month, open_no),
+            )
+        )
+        # 中段追充值：观察期足够长且命中概率的会员，在 M3 追加
+        if observed >= 5 and h01("topup", SALT, member) < TOPUP_RATE:
+            topup_cents = int(round(lifetime_cents * (0.25 + 0.2 * h01("topamt", member)) / 100.0)) * 100
+            topup_cents = max(5000, topup_cents)  # 单笔不低于 50 元
+            topup_month = order_month(cohort_month, 3)
+            topup_no = f"RT{i:02d}03{member[-4:]}"
+            rows.append(
+                _base_row(
+                    order_no=topup_no,
+                    member_code=member,
+                    cohort_month=cohort_month,
+                    channel=channel,
+                    store_code=f"{STORE_PREFIX}{1 + int(h01('tstore', member) * STORE_COUNT):03d}",
+                    order_type=OrderType.RECHARGE.value,
+                    order_month=topup_month,
+                    month_index=3,
+                    amount=Decimal(topup_cents) / Decimal(100),
+                    ordered_at=order_timestamp(topup_month, topup_no),
+                )
+            )
+    return rows
+
+
+def build_refund_orders(
+    consume_rows: list[dict],
+    cells: dict[tuple[int, int], CellPlan],
+    member_recharge: dict[str, list[dict]],
+) -> list[dict]:
+    """生成退款单（恒负、关联原单）。
+
+    - 退消费：选非最后观察月的消费单，约 REFUND_CONSUME_RATE 比例，
+      其中约 1/3 跨月退款（落到下一观察月），用于验证跨月冲减；
+      只退部分金额（70%~95%），保证会员当月仍活跃、且不超额。
+    - 退未核销充值：从期末仍有余额的会员里挑少量，退款额 < 期末余额，
+      只减待消费余额、不碰净营收。
+    """
+    rows: list[dict] = []
+    # 群 index -> 可观察月数
+    observed_map = {i: len(BASE_RETENTION) - i for i in range(len(COHORT_MONTHS))}
+
+    # 可退消费单：月序 m 后面至少还有一个观察月，便于安排跨月退款
+    refundable = [
+        (idx, row)
+        for idx, row in enumerate(consume_rows)
+        if row["month_index"] + 1 < observed_map[COHORT_MONTHS.index(row["cohort_month"])]
+    ]
+    target_count = int(round(len(consume_rows) * REFUND_CONSUME_RATE))
+    # 确定性等距抽样，保证分布均匀且可复现
+    step = max(1, len(refundable) // target_count) if refundable else 1
+    chosen = refundable[:: step][:target_count]
+
+    refund_seq = 0
+    for _, original in chosen:
+        i = COHORT_MONTHS.index(original["cohort_month"])
+        observed = observed_map[i]
+        cross_month = h01("rf", SALT, original["order_no"]) < 0.34
+        refund_m = original["month_index"] + (1 if cross_month else 0)
+        if refund_m >= observed:
+            refund_m = original["month_index"]
+        ratio = 0.70 + 0.25 * h01("rfratio", original["order_no"])  # 70%~95%
+        refund_cents = max(100, int(round(float(original["amount"]) * 100 * ratio)))
+        refund_cents = min(refund_cents, int(round(float(original["amount"]) * 100)) - 100)
+        if refund_cents <= 0:
+            continue
+        refund_month = order_month(original["cohort_month"], refund_m)
+        refund_no = f"RF{refund_seq:06d}"
+        refund_seq += 1
+        rows.append(
+            _base_row(
+                order_no=refund_no,
+                member_code=original["member_code"],
+                cohort_month=original["cohort_month"],
+                channel=original["channel"],
+                store_code=original["store_code"],
+                order_type=OrderType.REFUND.value,
+                order_month=refund_month,
+                month_index=refund_m,
+                amount=-(Decimal(refund_cents) / Decimal(100)),
+                refund_order_no=original["order_no"],
+                refund_type=RefundType.CONSUME.value,
+                ordered_at=order_timestamp(refund_month, refund_no),
+            )
+        )
+
+    # 退未核销充值：先估算每个会员期末余额（充值 - 消费），只退余额充足者
+    recharge_sum: dict[str, int] = {}
+    for member, recharge_list in member_recharge.items():
+        recharge_sum[member] = sum(
+            int(round(float(r["amount"]) * 100)) for r in recharge_list
+        )
+    # 会员消费额由调用方通过闭包外字典传入更直接，这里用 consume_rows 重算
+    consume_sum: dict[str, int] = {}
+    for row in consume_rows:
+        consume_sum[row["member_code"]] = consume_sum.get(row["member_code"], 0) + int(
+            round(float(row["amount"]) * 100)
+        )
+
+    candidates = []
+    for member, recharge_cents in recharge_sum.items():
+        balance = recharge_cents - consume_sum.get(member, 0)
+        if balance >= 8000:  # 期末余额 ≥ 80 元才有空间退未核销充值
+            candidates.append((member, balance))
+    candidates.sort(key=lambda x: x[0])
+    target_recharge_refunds = int(round(len(member_recharge) * RECHARGE_REFUND_RATE))
+    for member, balance in candidates[:target_recharge_refunds]:
+        i = next(idx for idx, m in enumerate(COHORT_MONTHS) if member.startswith(f"M{idx:02d}-"))
+        observed = observed_map[i]
+        refund_m = max(0, observed - 1)  # 在最后一个观察月退，验证不碰营收
+        refund_cents = min(balance - 100, max(2000, int(round(balance * 0.25 / 100.0)) * 100))
+        if refund_cents <= 0:
+            continue
+        # 关联该会员的开卡充值单
+        open_recharge = next(
+            r for r in member_recharge[member] if r["month_index"] == 0
+        )
+        refund_month = order_month(open_recharge["cohort_month"], refund_m)
+        refund_no = f"RR{refund_seq:06d}"
+        refund_seq += 1
+        rows.append(
+            _base_row(
+                order_no=refund_no,
+                member_code=member,
+                cohort_month=open_recharge["cohort_month"],
+                channel=open_recharge["channel"],
+                store_code=open_recharge["store_code"],
+                order_type=OrderType.REFUND.value,
+                order_month=refund_month,
+                month_index=refund_m,
+                amount=-(Decimal(refund_cents) / Decimal(100)),
+                refund_order_no=open_recharge["order_no"],
+                refund_type=RefundType.RECHARGE.value,
+                ordered_at=order_timestamp(refund_month, refund_no),
+            )
+        )
     return rows
 
 
 def demo_plan() -> tuple[dict[tuple[int, int], CellPlan], dict, list[dict]]:
     cells = build_cells()
     counts = solve_order_counts(cells)
-    rows = iter_orders(cells, counts)
+    consume_rows, member_channel, lifetime = iter_consume_orders(cells, counts)
+    recharge_rows = build_recharge_orders(cells, member_channel, lifetime)
+
+    member_recharge: dict[str, list[dict]] = {}
+    for row in recharge_rows:
+        member_recharge.setdefault(row["member_code"], []).append(row)
+
+    refund_rows = build_refund_orders(consume_rows, cells, member_recharge)
+    rows = consume_rows + recharge_rows + refund_rows
     return cells, counts, rows
 
 
@@ -314,10 +535,14 @@ def cohort_seed_rows() -> list[dict]:
     return out
 
 
-if __name__ == "__main__":  # 本地自检：不连库也能验证设计值
+if __name__ == "__main__":  # 本地自检：不连库也能验证设计值与对账
     cells, counts, rows = demo_plan()
-    total = sum(row["amount"] for row in rows)
-    print("orders", len(rows), "cells", len(counts))
-    print("revenue", float(total), "per member", float(total) / sum(COHORT_SIZES))
+    consume = [r for r in rows if r["order_type"] == OrderType.CONSUME.value]
+    recharge = [r for r in rows if r["order_type"] == OrderType.RECHARGE.value]
+    refunds = [r for r in rows if r["order_type"] == OrderType.REFUND.value]
+    print(
+        "orders", len(rows), "consume", len(consume),
+        "recharge", len(recharge), "refund", len(refunds),
+    )
     print("M1", cells[(0, 1)].active, "/", COHORT_SIZES[0])
     print("M6", cells[(0, 6)].active, "/", COHORT_SIZES[0])

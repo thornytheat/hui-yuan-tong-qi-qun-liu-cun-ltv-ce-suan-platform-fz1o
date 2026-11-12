@@ -10,8 +10,8 @@ CSV_HEADER = [
     "CAC(元)",
     "样本会员数",
     "观察月数",
-    "人均累计营收(元)",
-    "月均营收(元)",
+    "人均累计净营收(元)",
+    "月均净营收(元)",
     "月均毛利贡献(元)",
     "回本周期(月)",
     "历史LTV(元)",
@@ -70,6 +70,23 @@ def report_md(results: dict, report_name: str, published_at: str | None = None) 
         lines += ["", "低样本剔除（<30 人，不参与排行）："]
         for cell in low["channel_cells"]:
             lines.append(f"- {cell['month']} × {cell['channel']}：{cell['members']} 人")
+    wallet = results.get("wallet") or {}
+    if wallet:
+        lines += [
+            "",
+            "## 储值口径与对账",
+            "",
+            f"- 累计充值（待消费余额来源）：¥{wallet.get('recharge_total', 0):,.2f}",
+            f"- 累计消费核销：¥{wallet.get('consume_total', 0):,.2f}",
+            f"- 退已核销消费：¥{wallet.get('refund_consume_total', 0):,.2f}"
+            "（退款发生月冲净营收）",
+            f"- 退未核销充值：¥{wallet.get('refund_recharge_total', 0):,.2f}（只减余额）",
+            f"- 净营收（消费 - 退消费）：¥{wallet.get('net_revenue', 0):,.2f}",
+            f"- 期末待消费余额：¥{wallet.get('pending_balance', 0):,.2f}",
+            f"- 对账差异：¥{wallet.get('reconcile_diff', 0):,.2f}"
+            f"（{'已对平，允许发布' if wallet.get('balanced') else '未对平，禁止发布'}）",
+            f"- 恒等式：{wallet.get('identity', '充值 - 消费 - 退未核销充值 = 期末待消费余额')}",
+        ]
     lines += [
         "",
         f"- 口径：{results['notes']['fit']}",

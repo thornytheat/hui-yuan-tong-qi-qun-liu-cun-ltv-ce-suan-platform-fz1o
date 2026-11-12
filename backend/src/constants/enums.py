@@ -15,6 +15,17 @@ class Channel(StrEnum):
     ALL = "all"                # 汇总行（仅 RetentionCell 使用）
 
 
+class OrderType(StrEnum):
+    RECHARGE = "recharge"      # 储值充值：只形成待消费余额（负债），不确认营收
+    CONSUME = "consume"        # 实际消费：核销余额，消费发生月确认营收
+    REFUND = "refund"          # 退款：负数金额，关联原单，退款发生月冲减
+
+
+class RefundType(StrEnum):
+    CONSUME = "consume"        # 退已核销消费：冲减退款月净营收
+    RECHARGE = "recharge"      # 退未核销充值：只减待消费余额，不碰营收
+
+
 class CellState(StrEnum):
     OBSERVED = "observed"
     RIGHT_CENSORED = "right_censored"

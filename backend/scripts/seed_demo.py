@@ -22,6 +22,7 @@ from src.config.settings import settings
 from src.constants.enums import Channel, ReportStatus
 from src.models.cohort import Cohort
 from src.models.ltv_report import LtvReport
+from src.models.member_balance import MemberBalance
 from src.models.member_order import MemberOrder
 from src.models.retention_cell import RetentionCell
 from src.models.user import User
@@ -81,14 +82,17 @@ def _seed_cohorts(db) -> tuple[int, int]:
 
 def _seed_orders(db) -> tuple[int, int]:
     existing = db.execute(select(func.count()).select_from(MemberOrder)).scalar_one()
-    if existing >= fixtures.TOTAL_ORDERS:
+    if existing > 0:
         return 0, int(existing)
-    _, counts, rows = fixtures.demo_plan()
+    _, _, rows = fixtures.demo_plan()
     for start in range(0, len(rows), CHUNK):
         db.execute(insert(MemberOrder), rows[start:start + CHUNK])
     db.flush()
+    by_type: dict[str, int] = {}
+    for row in rows:
+        by_type[row["order_type"]] = by_type.get(row["order_type"], 0) + 1
     print(
-        f"[seed] orders generated rows={len(rows)} cells={len(counts)}",
+        f"[seed] orders generated rows={len(rows)} by_type={by_type}",
         flush=True,
     )
     return len(rows), 0
@@ -165,10 +169,23 @@ def seed_all() -> dict:
         orders = db.execute(select(func.count()).select_from(MemberOrder)).scalar_one()
         users = db.execute(select(func.count()).select_from(User)).scalar_one()
         cells = db.execute(select(func.count()).select_from(RetentionCell)).scalar_one()
+        balances = db.execute(select(func.count()).select_from(MemberBalance)).scalar_one()
+        recharge_orders = db.execute(
+            select(func.count()).select_from(MemberOrder).where(
+                MemberOrder.order_type == "recharge"
+            )
+        ).scalar_one()
+        refund_orders = db.execute(
+            select(func.count()).select_from(MemberOrder).where(
+                MemberOrder.order_type == "refund"
+            )
+        ).scalar_one()
 
     summary = (
         f"SEED_SUMMARY brand={settings.brand} cohorts={int(cohorts)} "
         f"members={int(members)} orders={int(orders)} "
+        f"(consume={fixtures.CONSUME_ORDERS} recharge={int(recharge_orders)} "
+        f"refund={int(refund_orders)}) balances={int(balances)} "
         f"channels={len(fixtures.COHORT_CHANNELS)} users={int(users)}"
     )
     print(summary, flush=True)
@@ -185,6 +202,7 @@ def seed_all() -> dict:
         "orders": int(orders),
         "users": int(users),
         "cells": int(cells),
+        "balances": int(balances),
     }
 
 

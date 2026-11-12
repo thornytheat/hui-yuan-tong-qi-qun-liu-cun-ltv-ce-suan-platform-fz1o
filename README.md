@@ -1,8 +1,9 @@
 # cohortltv · 会员同期群留存与 LTV 测算台
 
 一杯咖啡的会员生意，12 个首单月同期群，M0 到 M12 的留存格子上色，右删失格子标灰不参与拟合；
-ARPU 留存拿去做加权最小二乘拿到 λ 与 R²，再折成 12 个月预测 LTV 和渠道回本周期 —— 一句话：
-**把「客单 32 × 假设 8 次」换成能解释给财务的衰减曲线。**
+**储值制核算**：充值只形成待消费余额（负债），消费/退款发生月才确认净营收，跨月核销归真实消费月，
+对账差异非零禁止发布；ARPU 留存拿去做加权最小二乘拿到 λ 与 R²，再折成 12 个月预测 LTV 和渠道回本周期 ——
+一句话：**把「充值当营收」换成能解释给财务的净营收与待消费余额。**
 
 ---
 
@@ -14,7 +15,7 @@ ARPU 留存拿去做加权最小二乘拿到 λ 与 R²，再折成 12 个月预
 
 **三个痛点**
 
-1. 留存矩阵手工拼容易错位，右删失月份根本没标，导致早期群被低估；
+1. 会员订单混杂储值充值与实际消费，充值被算成营收后留存与渠道回本系统性偏高，退款还留下负金额；
 2. LTV 假设没有依据、无法解释给财务，换一个 λ 就换一套结论却说不清为什么；
 3. 渠道 CAC 与回本周期算不清，私域和信息流到底谁该加预算，只能凭印象。
 
@@ -46,12 +47,17 @@ ARPU 留存拿去做加权最小二乘拿到 λ 与 R²，再折成 12 个月预
 
 ## 2. 主要功能
 
-1. **留存矩阵**（算法 1）：12 个首单月同期群 × M0..M12 共 156 格，热力上色用烘豆色阶；右删失格斜纹标记、不参与拟合；列合计留存、低样本标记、Celery 异步重建。
-2. **同期群详情**：人数留存曲线（SVG 自绘）、订单金额分布直方图、渠道构成与营收拆分、M6 台阶业务解释。
-3. **LTV 测算**（算法 2）：观察期 / 毛利率 / 渠道 CAC 可配；后端网格搜索 λ∈[0.02,0.60]、闭式解 a、加权 R²；输出历史 LTV、预测 12 月 LTV、渠道回本表与敏感性表（λ ±0.03、CAC ×0.8/1.0/1.2）。
-4. **复核与发布**：分析师出草稿，负责人发布；发布后渠道页与导出口径冻结。
-5. **渠道对比与导出**：回本周期排行、低样本剔除说明、CSV（4 行）与 MD 说明下载。
-6. **横切**：JWT + 三角色 RBAC、审计日志（登录/重建/测算/发布/导出/越权）、Redis 滑动窗口限流、全局错误处理。
+1. **储值钱包与对账**：订单三分类（recharge 充值 / consume 消费 / refund 退款），充值只形成待消费余额；
+   会员余额台账逐会员维护，恒等式 `充值 - 消费 - 退未核销充值 = 期末待消费余额`，差异非零（>1 分）或负余额
+   直接阻断矩阵重建与报告发布。
+2. **净营收留存矩阵**（算法 1）：12 个首单月同期群 × M0..M12，活跃只认「未被全额退款的消费」，仅充值/退款不算活跃；
+   格子金额为净营收（消费核销 - 退消费），跨月核销归真实消费月；右删失格斜纹标记、不参与拟合；待消费余额随月滚动。
+3. **同期群详情**：人数留存曲线（SVG 自绘）、消费金额分布直方图、储值钱包（充值/消费/两类退款/余额）、渠道净营收拆分。
+4. **LTV 测算**（算法 2）：观察期 / 毛利率 / 渠道 CAC 可配；后端网格搜索 λ∈[0.02,0.60]、闭式解 a、加权 R²；
+   输出 12 个月预测 LTV、渠道回本表与敏感性表，全部基于净营收口径。
+5. **复核与发布**：分析师出草稿，负责人发布；**发布闸门强制对账对平**且报告口径与当前台账一致；发布后渠道页与导出口径冻结。
+6. **渠道对比与导出**：净营收口径回本周期排行、低样本剔除、CSV 与含储值对账段的 MD 说明下载。
+7. **横切**：JWT + 三角色 RBAC、审计日志（登录/重建/测算/发布/导出/越权）、Redis 滑动窗口限流、全局错误处理。
 
 ## 3. 快速启动
 
@@ -76,7 +82,8 @@ seed 幂等（自然键：`users.email` / `cohorts.month` / `member_orders.order
 
 ```bash
 docker compose exec -T backend python -m scripts.seed_demo
-# SEED_SUMMARY brand=cohortltv cohorts=12 members=6000 orders=24000 channels=4 users=3
+# SEED_SUMMARY brand=cohortltv cohorts=12 members=6000 orders=30799
+#   (consume=24000 recharge=6391 refund=408) balances=6000 channels=4 users=3
 ```
 
 访问地址：前端 <http://localhost:18257> ，后端直连 <http://localhost:19257/api/health> ，PostgreSQL `localhost:17757`。
@@ -103,14 +110,14 @@ gb-584/
 │   ├── migrations/             # alembic（容器默认走 bootstrap_db，迁移备用）
 │   ├── scripts/
 │   │   ├── bootstrap_db.py     # 建 schema + create_all
-│   │   ├── fixtures.py         # 12 群 / 24,000 单的确定性生成器
+│   │   ├── fixtures.py         # 12 群 / 充值+消费+退款三类订单的确定性生成器
 │   │   └── seed_demo.py        # 幂等 seed + SEED_SUMMARY
 │   └── src/
 │       ├── config/             # settings / database / celery_app / app
 │       ├── constants/          # enums / roles / channels / error_codes / limits / templates
-│       ├── models/             # cohort / member_order / retention_cell / ltv_report / audit_log / user
+│       ├── models/             # cohort / member_order / member_balance / retention_cell / ltv_report / audit_log / user
 │       ├── schemas/            # auth / cohort / ltv / channel / audit / common
-│       ├── services/           # decay_fit / retention / cohort / ltv / channel / export / auth / audit
+│       ├── services/           # billing_core / decay_fit / retention / cohort / ltv / channel / export / auth / audit
 │       ├── controllers/        # 参数编排 + 审计
 │       ├── routes/             # /api 路由（健康、认证、矩阵、测算、渠道、导出、审计）
 │       ├── middlewares/        # auth / rbac / rate_limit / audit_logger / security_headers / error_handler
@@ -126,7 +133,7 @@ gb-584/
         ├── types/              # api / user / domain
         ├── constants/          # enums / roles / messages
         ├── components/common/  # AppShell / PageHeader / StampSeal / EmptyState / ErrorNotice / RoastLegend
-        ├── components/business/# RetentionHeatTable / RetentionCurve / AmountHistogram / SensitivityTable / PaybackBars
+        ├── components/business/# RetentionHeatTable / RetentionCurve / AmountHistogram / SensitivityTable / PaybackBars / WalletPanel
         ├── hooks/              # useAsync / useLtvForm
         ├── utils/              # request / format / curve
         ├── router/             # index / guards
@@ -161,26 +168,51 @@ gb-584/
 
 ## 8. 算法口径（前后端同源，前端只展示）
 
-**算法 1 · 同期群留存矩阵**（`backend/src/services/retention_service.py`）
+**算法 0 · 储值钱包与净营收确认**（`backend/src/services/billing_core.py`，纯函数）
+
+- 订单三分类（`member_orders.order_type`）：
+  - `recharge` 储值充值：金额为正，只形成**待消费余额**（负债），永不确认营收；
+  - `consume` 实际消费：金额为正，核销余额，按**消费发生月**确认营收；
+  - `refund` 退款：金额恒为负且 `refund_order_no` 关联原单，`refund_type` 区分
+    退已核销消费（`consume`）/ 退未核销充值（`recharge`）。
+- 净营收 = 消费核销 − 退消费，在消费/退款**发生月**确认；跨月核销按订单自身 `order_month` 落月，
+  天然归到真实消费月，与充值月解耦；退未核销充值只减余额、不碰营收，因此不会产生负营收。
+- 活跃口径：当月有「未被全额退款的消费」才算活跃；仅充值、仅退款、被全额退款的消费一律不活跃。
+- 对账恒等式（逐会员 + 全局，容差 1 分）：
+  `充值 − 消费 − 退未核销充值 = 期末待消费余额`；负余额、退款超额、悬空退款、残差非零都判 `balanced=false`，
+  矩阵重建（`retention_service`）与报告发布（`ltv_service.publish_report`）直接抛 `RECONCILE_MISMATCH`，**对不上不能发布**。
+- 会员余额落在 `member_balances` 表（整表重建，幂等），格子级三栏金额与滚动余额落在 `retention_cells`。
+
+**算法 1 · 同期群留存矩阵**（`backend/src/services/retention_service.py` + `retention_core.py`）
 
 - 分群：按首单月（`member_orders.cohort_month`），群规模 N = 该群去重会员数；
-- M0 = 首单月（全员活跃）；Mn = 第 n 个月有 ≥1 单的去重会员数 / N；
-- 快照月（2026-11）尚未走到的月序 → `right_censored=true`，`active=0`、`retention=null`，不参与拟合；
+- M0 = 首单月（全员有有效消费）；Mn = 第 n 个月有未被全额退款消费的去重会员数 / N；
+- 格子 `revenue` 是净营收（不含充值），`recharge_amount` 单列，`pending_balance` 只在 `channel='all'` 汇总格维护；
+- 快照月（2026-11）尚未走到的月序 → `right_censored=true`，活跃/金额/余额全部归零，`retention=null`，不参与拟合；
 - 每个格子按渠道拆一份，`channel='all'` 是矩阵汇总格。
 
 **算法 2 · LTV 与回本**（`backend/src/services/decay_fit.py` + `ltv_service.py`）
 
-- ARPU₀ = 各群 M0 营收 / 各群规模（全渠道加权）；
-- 拟合对象是 **ARPU 留存** `y = (格内营收 / 群规模) / ARPU₀`（人数留存矩阵单独展示，M6 台阶不影响拟合）；
+- ARPU₀ = 各群 M0 **净营收** / 各群规模（全渠道加权）；
+- 拟合对象是 **ARPU 留存** `y = (格内净营收 / 群规模) / ARPU₀`（人数留存矩阵单独展示，M6 台阶不影响拟合）；
 - 模型 `R_m = a·exp(-λm)`：λ 在 `[0.02, 0.60]` 上 0.001 步长网格搜索，给定 λ 时
   `a = Σ w·y·e^{-λm} / Σ w·e^{-2λm}` 为加权最小二乘闭式解，权重 `w = 群规模`；
-- 历史 LTV = 观察期内群累计营收 / 群规模，跨群按会员数加权；
+- 历史 LTV = 观察期内群累计**净营收** / 群规模，跨群按会员数加权（不含待消费余额）；
 - 预测 12 月 LTV = `ARPU₀ × Σ_{m=0..11} a·exp(-λm)`；
-- 回本周期 = `CAC / 月均毛利贡献`，月均毛利贡献 = 观察期人均月营收 × 毛利率（默认 50%）；
+- 回本周期 = `CAC / 月均毛利贡献`，月均毛利贡献 = 观察期人均月净营收 × 毛利率（默认 50%）；
 - 群或「群×渠道」样本 < 30 → `low_sample`，不进入渠道排行；
+- 报告 `results.wallet` 冻结储值口径与对账结论，留存矩阵 / LTV / 渠道回本共用同一份对平结果；
 - 无 scipy/sklearn 依赖：13 个月列 × 581 个候选 λ，纯 Python 手写。
 
 ## 9. 共享枚举出现位置
+
+**枚举 A0：订单类型 / 退款类型 `OrderType` / `RefundType`（recharge / consume / refund）**
+
+- 后端：`backend/src/constants/enums.py`、`backend/src/models/member_order.py`（金额符号与退款关联 CheckConstraint）、
+  `backend/src/services/billing_core.py`、`retention_core.py`、`retention_service.py`、`cohort_service.py`、
+  `ltv_service.py`、`scripts/fixtures.py`
+- 前端：`frontend/src/constants/enums.ts`（`OrderType` / `ORDER_TYPE_LABELS`）、
+  `frontend/src/components/business/WalletPanel.vue`、`frontend/src/pages/{Matrix,Ltv,Channels,CohortDetail}Page.vue`
 
 **枚举 A：渠道 `Channel`（private / paid_feed / store / partner / all）**
 

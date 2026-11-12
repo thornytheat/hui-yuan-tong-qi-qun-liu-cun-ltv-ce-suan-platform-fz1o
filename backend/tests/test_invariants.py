@@ -6,12 +6,28 @@ import random
 
 import pytest
 
+from src.constants.enums import OrderType
 from src.services.decay_fit import fit_exponential
 from src.services.ltv_core import compute_ltv, sensitivity
 from src.services.retention_core import CohortInput, build_retention_cells
 from support import cell, cohort, ltv_params
 
 SNAPSHOT = "2026-11"
+
+
+def _consume(order_no, member, month, m_idx, amount, channel="private"):
+    return {
+        "order_no": order_no,
+        "member_code": member,
+        "cohort_month": month,
+        "channel": channel,
+        "order_type": OrderType.CONSUME.value,
+        "order_month": month,
+        "month_index": m_idx,
+        "amount": float(amount),
+        "refund_order_no": None,
+        "refund_type": None,
+    }
 
 
 def _case() -> tuple[list[dict], list[dict]]:
@@ -77,32 +93,56 @@ def test_ranges_and_count_conservation() -> None:
     assert paybacks == sorted(paybacks)  # 排行按回本周期升序
     assert [row["rank"] for row in res["channels"]] == list(range(1, len(paybacks) + 1))
 
-    # 留存率恒在 [0,1]，且活跃数不超过分母
-    channel_aggs = []
+    # 留存率恒在 [0,1]，且活跃数不超过分母（订单事实口径：充值覆盖消费，余额不为负）
+    order_rows = []
+    member_aggs = []
+    seq = 0
     for key, month, size in (
         ("a", "2026-07", 60),
         ("b", "2026-08", 80),
         ("c", "2026-09", 40),
     ):
+        member_aggs.append((month, "private", size))
         for m in range(4):
             active = min(size, round(size * math.exp(-0.25 * m)))
-            channel_aggs.append((month, m, "private", active, active * 30.0, active))
+            for u in range(active):
+                # 每个活跃会员先充值再消费，保证储值余额恒非负、对账对平
+                order_rows.append(
+                    _consume(f"{key}-C{seq}", f"{key}-u{u}", month, m, 30.0)
+                )
+                seq += 1
+        # 开卡充值覆盖该会员全部消费（每人最多 4 个月 × 30 元）
+        for u in range(size):
+            order_rows.append({
+                "order_no": f"{key}-R{u}",
+                "member_code": f"{key}-u{u}",
+                "cohort_month": month,
+                "channel": "private",
+                "order_type": OrderType.RECHARGE.value,
+                "order_month": month,
+                "month_index": 0,
+                "amount": 200.0,
+                "refund_order_no": None,
+                "refund_type": None,
+            })
     build = build_retention_cells(
         [
             CohortInput("a", "2026-07", 60),
             CohortInput("b", "2026-08", 80),
             CohortInput("c", "2026-09", 40),
         ],
-        channel_aggs,
-        [("2026-07", "private", 60), ("2026-08", "private", 80), ("2026-09", "private", 40)],
+        order_rows,
+        member_aggs,
         SNAPSHOT,
         4,
         30,
     )
+    assert build.summary["reconcile"]["balanced"] is True
     for row in build.rows:
         if row["retention_rate"] is not None:
             assert 0.0 <= row["retention_rate"] <= 1.0
         assert row["active_members"] <= row["sample_size"]
+        assert row["pending_balance"] >= 0.0
 
 
 def test_sensitivity_threshold_monotonic() -> None:

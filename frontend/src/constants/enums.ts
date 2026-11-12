@@ -9,6 +9,20 @@ export const Channel = {
 } as const
 export type ChannelCode = (typeof Channel)[keyof typeof Channel]
 
+/** 订单三分类：充值只形成待消费余额；消费确认净营收；退款在发生月冲减。 */
+export const OrderType = {
+  Recharge: 'recharge',
+  Consume: 'consume',
+  Refund: 'refund',
+} as const
+export type OrderTypeCode = (typeof OrderType)[keyof typeof OrderType]
+
+export const ORDER_TYPE_LABELS: Record<string, string> = {
+  recharge: '储值充值',
+  consume: '实际消费',
+  refund: '退款',
+}
+
 export const CHANNEL_CODES: ChannelCode[] = [
   Channel.Private,
   Channel.PaidFeed,

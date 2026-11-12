@@ -5,6 +5,9 @@ export interface RetentionCell {
   rate_label: string
   state: 'observed' | 'right_censored'
   revenue: number
+  recharge_amount: number
+  refund_consume_amount: number
+  pending_balance: number
 }
 
 export interface MatrixRow {
@@ -23,6 +26,19 @@ export interface MatrixColumn {
   rate_label: string
 }
 
+export interface ReconcileInfo {
+  balanced: boolean
+  recharge_total: number
+  consume_total: number
+  refund_consume_total: number
+  refund_recharge_total: number
+  net_revenue: number
+  pending_balance: number
+  reconcile_diff: number
+  identity: string
+  balance_members: number
+}
+
 export interface MatrixStats {
   cohorts: number
   cells_total: number
@@ -33,6 +49,12 @@ export interface MatrixStats {
   members: number
   revenue_total: number
   cumulative_arpu: number
+  recharge_orders: number
+  refund_orders: number
+  net_revenue_total: number
+  recharge_total: number
+  refund_consume_total: number
+  pending_balance_total: number
 }
 
 export interface MatrixPayload {
@@ -41,6 +63,7 @@ export interface MatrixPayload {
   cohorts: MatrixRow[]
   columns: MatrixColumn[]
   stats: MatrixStats
+  reconcile: ReconcileInfo
   notes: Record<string, string>
 }
 
@@ -50,6 +73,18 @@ export interface CurvePoint {
   rate: number
   rate_label: string
   revenue: number
+  recharge_amount: number
+  refund_consume_amount: number
+  pending_balance: number
+}
+
+export interface WalletInfo {
+  recharge_total: number
+  consume_total: number
+  refund_consume_total: number
+  refund_recharge_total: number
+  pending_balance: number
+  net_revenue: number
 }
 
 export interface ChannelMixEntry {
@@ -80,13 +115,19 @@ export interface CohortDetail {
     sample_size: number
     low_sample: boolean
     revenue: number
+    recharge_amount: number
     revenue_per_member: number
     m1: number | null
     m3: number | null
     m6: number | null
   }[]
+  wallet: WalletInfo
   summary: {
     cumulative_revenue: number
+    net_revenue: number
+    recharge_total: number
+    refund_consume_total: number
+    pending_balance: number
     arpu: number
     m1: number | null
     m6: number | null
@@ -99,6 +140,8 @@ export interface CohortSummary {
   size: number
   observed_months: number
   cumulative_revenue: number
+  net_revenue: number
+  pending_balance: number
   arpu: number
   avg_active_ratio: number
   low_sample: boolean
@@ -146,6 +189,15 @@ export interface ChannelRow {
   low_sample: boolean
 }
 
+export interface LtvWallet extends WalletInfo {
+  balanced: boolean
+  identity: string
+  reconcile_diff: number
+  abs_member_diff: number
+  balance_members: number
+  order_counts: Record<string, number>
+}
+
 export interface LtvResults {
   snapshot_month: string
   params: Record<string, any>
@@ -164,6 +216,7 @@ export interface LtvResults {
     revenue: number
   }
   channels: ChannelRow[]
+  wallet: LtvWallet
   low_sample: {
     cohorts: { month: string; size: number }[]
     channel_cells: { month: string; channel: string; members: number }[]
@@ -223,6 +276,7 @@ export interface ChannelComparison {
     worst_payback: number | null
     weighted_cac: number
   }
+  wallet: LtvWallet
   scope: { channel_scope: string | null; scoped: boolean }
   low_sample: {
     cohorts: { month: string; size: number }[]

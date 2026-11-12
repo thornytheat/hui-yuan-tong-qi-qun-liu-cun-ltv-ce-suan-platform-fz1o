@@ -47,6 +47,8 @@
         ；全渠道数据请用分析师或负责人账号登录。
       </div>
 
+      <WalletPanel v-if="data.wallet && data.wallet.balanced !== undefined" :wallet="data.wallet" />
+
       <div class="layout">
         <section class="board">
           <div class="board__head">
@@ -103,7 +105,7 @@
                 <dd class="mono">{{ money(data.arpu0) }}</dd>
               </div>
               <div>
-                <dt>旧口径</dt>
+                <dt>旧口径（充值计营收，偏高）</dt>
                 <dd class="mono">¥256（32 × 8 次）</dd>
               </div>
             </dl>
@@ -136,6 +138,7 @@ import PageHeader from '../components/common/PageHeader.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import ErrorNotice from '../components/common/ErrorNotice.vue'
 import PaybackBars from '../components/business/PaybackBars.vue'
+import WalletPanel from '../components/business/WalletPanel.vue'
 import { useAuthStore } from '../stores/authStore'
 import { downloadChannelsCsv, downloadReportMd, fetchComparison } from '../api/channel'
 import type { ChannelComparison } from '../types/domain'

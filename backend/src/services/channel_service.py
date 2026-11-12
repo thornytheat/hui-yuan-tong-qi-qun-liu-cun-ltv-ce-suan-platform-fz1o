@@ -61,5 +61,6 @@ def comparison(db: Session, user: User) -> dict:
         "totals": totals,
         "scope": {"channel_scope": scope, "scoped": scoped},
         "low_sample": results["low_sample"],
+        "wallet": results.get("wallet", {}),
         "notes": results["notes"],
     }

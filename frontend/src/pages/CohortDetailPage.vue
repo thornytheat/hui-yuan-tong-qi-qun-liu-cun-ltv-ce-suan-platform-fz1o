@@ -43,9 +43,37 @@
           <span class="band__sub mono">满 13 格观察</span>
         </div>
         <div class="band__cell band__cell--note">
-          <span class="label">人均累计营收</span>
+          <span class="label">人均净营收</span>
           <span class="band__value mono">{{ money(detail.summary.arpu) }}</span>
-          <span class="band__sub mono">{{ money(detail.summary.cumulative_revenue) }} / {{ detail.size }} 人</span>
+          <span class="band__sub mono">{{ money(detail.summary.net_revenue) }} / {{ detail.size }} 人</span>
+        </div>
+      </section>
+
+      <section class="band band--wallet" v-if="detail.wallet">
+        <div class="band__cell">
+          <span class="label">累计充值（负债）</span>
+          <span class="band__value mono">{{ money(detail.wallet.recharge_total) }}</span>
+          <span class="band__sub mono">不确认营收</span>
+        </div>
+        <div class="band__cell">
+          <span class="label">消费核销</span>
+          <span class="band__value mono">{{ money(detail.wallet.consume_total) }}</span>
+          <span class="band__sub mono">按消费发生月</span>
+        </div>
+        <div class="band__cell">
+          <span class="label">退消费 / 退充值</span>
+          <span class="band__value mono">{{ money(detail.wallet.refund_consume_total) }}</span>
+          <span class="band__sub mono">退充值 {{ money(detail.wallet.refund_recharge_total) }}</span>
+        </div>
+        <div class="band__cell">
+          <span class="label">净营收</span>
+          <span class="band__value mono" data-test="detail-net-revenue">{{ money(detail.wallet.net_revenue) }}</span>
+          <span class="band__sub mono">消费 - 退消费</span>
+        </div>
+        <div class="band__cell band__cell--note">
+          <span class="label">期末待消费余额</span>
+          <span class="band__value mono" data-test="detail-balance">{{ money(detail.wallet.pending_balance) }}</span>
+          <span class="band__sub mono">充值 - 消费 - 退充值</span>
         </div>
       </section>
 
@@ -73,7 +101,7 @@
               :avg-ticket="detail.amount_distribution.avg_ticket"
             />
             <p class="curve-note-text">
-              该群订单总额 {{ money(detail.amount_distribution.total) }}，
+              该群实际消费单总额 {{ money(detail.amount_distribution.total) }}（仅含消费，不含充值/退款），
               客单 ¥{{ detail.amount_distribution.avg_ticket.toFixed(2) }}；
               高金额段来自礼盒与咖啡豆，饮品客单保持在 ¥26-48。
             </p>
@@ -108,7 +136,7 @@
           </section>
 
           <section class="panel panel--tight">
-            <div class="eyebrow">营收拆分</div>
+            <div class="eyebrow">净营收拆分（消费 - 退消费）</div>
             <ul class="revs">
               <li v-for="row in detail.channels" :key="`rev-${row.channel}`">
                 <span class="revs__name">{{ row.short }}</span>
@@ -118,13 +146,14 @@
                 <span class="revs__value mono">{{ money(row.revenue) }}</span>
               </li>
             </ul>
-            <p class="side__note">门店自然流以礼盒为主，人均营收最高；私域以券为主，频次高客单低。</p>
+            <p class="side__note">门店自然流以礼盒为主，人均净营收最高；私域以券为主，频次高客单低。充值余额不计入本拆分。</p>
           </section>
 
           <section class="panel panel--tight">
             <div class="eyebrow">口径</div>
             <p class="side__note">
-              分子 = 该月去重活跃会员；分母 = 群规模 {{ detail.size }}。
+              活跃分子 = 该月有未被全额退款消费的去重会员；分母 = 群规模 {{ detail.size }}。
+              净营收在消费/退款发生月确认，跨月核销归真实消费月；充值只形成待消费余额。
               右删失月（快照 {{ detail.snapshot_month }} 之后）不出现在曲线上。
             </p>
           </section>
@@ -181,6 +210,8 @@ onMounted(load)
 .band__cell { display: flex; flex-direction: column; gap: 2px; padding: 11px 14px; border-right: var(--hair); }
 .band__cell:last-child { border-right: 0; }
 .band__cell--note { background: var(--cream-3); }
+.band--wallet { margin-top: 12px; border-top: 0; }
+.band--wallet .band__value { font-size: 17px; }
 .band__value { font-size: 20px; }
 .band__sub { font-size: 10px; color: var(--coffee-3); }
 

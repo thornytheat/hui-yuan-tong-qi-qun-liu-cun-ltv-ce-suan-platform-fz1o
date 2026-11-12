@@ -52,7 +52,7 @@
                 v-else
                 class="cell"
                 :class="`roast-${roastLevel(cell.rate)}`"
-                :title="`${row.month} M${cell.m}：${cell.active} / ${row.size} 人，营收 ¥${cell.revenue.toLocaleString('zh-CN')}`"
+                :title="`${row.month} M${cell.m}：${cell.active} / ${row.size} 人活跃，净营收 ¥${cell.revenue.toLocaleString('zh-CN')}，待消费余额 ¥${cell.pending_balance.toLocaleString('zh-CN')}`"
               >
                 <span class="cell__value">{{ compact(cell.rate) }}</span>
               </div>

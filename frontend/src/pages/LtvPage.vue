@@ -12,9 +12,9 @@
         <button
           class="btn btn--quiet"
           type="button"
-          :disabled="!canPublish || !ltv.current || ltv.isPublished || ltv.publishing"
+          :disabled="!canPublish || !ltv.current || ltv.isPublished || ltv.publishing || !walletBalanced"
           data-test="publish"
-          :title="canPublish ? '发布后渠道页与导出口径冻结' : '仅增长负责人可发布'"
+          :title="publishTitle"
           @click="publish"
         >
           {{ ltv.publishing ? '发布中…' : '发布报告' }}
@@ -83,7 +83,7 @@
               <div class="kpi">
                 <span class="label">ARPU₀</span>
                 <span class="kpi__value mono" data-test="arpu0">{{ money(results.arpu0) }}</span>
-                <span class="kpi__sub mono">M0 人均营收</span>
+                <span class="kpi__sub mono">M0 人均净营收</span>
               </div>
               <div class="kpi">
                 <span class="label">衰减 λ</span>
@@ -93,7 +93,7 @@
               <div class="kpi">
                 <span class="label">历史 LTV</span>
                 <span class="kpi__value mono" data-test="ltv-hist">{{ money(results.ltv_hist) }}</span>
-                <span class="kpi__sub mono">观察期人均累计</span>
+                <span class="kpi__sub mono">观察期人均累计净营收</span>
               </div>
               <div class="kpi kpi--accent">
                 <span class="label">预测 12 月 LTV</span>
@@ -115,9 +115,11 @@
             <p class="receipt__note">{{ results.notes.fit }}</p>
           </section>
 
+          <WalletPanel v-if="results.wallet" :wallet="results.wallet" />
+
           <section class="panel panel--tight">
             <div class="spread">
-              <div class="eyebrow">渠道回本（按 λ 与 CAC 结果）</div>
+              <div class="eyebrow">渠道回本（按净营收口径与 CAC 结果）</div>
               <span class="label">毛利口径</span>
             </div>
             <table class="table">
@@ -200,6 +202,7 @@ import ErrorNotice from '../components/common/ErrorNotice.vue'
 import StampSeal from '../components/common/StampSeal.vue'
 import SensitivityTable from '../components/business/SensitivityTable.vue'
 import RetentionHeatTable from '../components/business/RetentionHeatTable.vue'
+import WalletPanel from '../components/business/WalletPanel.vue'
 import { useLtvStore } from '../stores/ltvStore'
 import { useCohortStore } from '../stores/cohortStore'
 import { useAuthStore } from '../stores/authStore'
@@ -218,6 +221,12 @@ const results = computed(() => ltv.results)
 const snapshot = computed(() => ltv.current?.results?.snapshot_month ?? cohorts.snapshot ?? '2026-11')
 const canRun = computed(() => auth.can('ltv:run'))
 const canPublish = computed(() => auth.can('ltv:publish'))
+const walletBalanced = computed(() => results.value?.wallet?.balanced ?? true)
+const publishTitle = computed(() => {
+  if (!canPublish.value) return '仅增长负责人可发布'
+  if (!walletBalanced.value) return '对账差异非零，明细与待消费余额对不上，禁止发布'
+  return '发布后渠道页与导出口径冻结'
+})
 
 async function loadReports() {
   await ltv.loadReports()

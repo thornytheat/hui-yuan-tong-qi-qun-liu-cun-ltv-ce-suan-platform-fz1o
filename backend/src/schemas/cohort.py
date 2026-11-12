@@ -29,6 +29,9 @@ class RetentionCellOut(BaseModel):
     rate_label: str = "—"
     state: Literal["observed", "right_censored"] = "observed"
     revenue: float = 0.0
+    recharge_amount: float = 0.0
+    refund_consume_amount: float = 0.0
+    pending_balance: float = 0.0
 
 
 class MatrixRowOut(BaseModel):
@@ -47,6 +50,19 @@ class MatrixColumnOut(BaseModel):
     rate_label: str = "—"
 
 
+class ReconcileOut(BaseModel):
+    balanced: bool
+    recharge_total: float = 0.0
+    consume_total: float = 0.0
+    refund_consume_total: float = 0.0
+    refund_recharge_total: float = 0.0
+    net_revenue: float = 0.0
+    pending_balance: float = 0.0
+    reconcile_diff: float = 0.0
+    identity: str = ""
+    balance_members: int = 0
+
+
 class MatrixStatsOut(BaseModel):
     cohorts: int
     cells_total: int
@@ -57,6 +73,12 @@ class MatrixStatsOut(BaseModel):
     members: int
     revenue_total: float
     cumulative_arpu: float
+    recharge_orders: int = 0
+    refund_orders: int = 0
+    net_revenue_total: float = 0.0
+    recharge_total: float = 0.0
+    refund_consume_total: float = 0.0
+    pending_balance_total: float = 0.0
 
 
 class MatrixOut(BaseModel):
@@ -65,6 +87,7 @@ class MatrixOut(BaseModel):
     cohorts: list[MatrixRowOut]
     columns: list[MatrixColumnOut]
     stats: MatrixStatsOut
+    reconcile: ReconcileOut
     notes: dict[str, str]
 
 
@@ -74,9 +97,12 @@ class MemberOrderOut(BaseModel):
     cohort_month: str
     channel: str
     store_code: str
+    order_type: str
     order_month: str
     month_index: int
     amount: float
+    refund_order_no: str | None = None
+    refund_type: str | None = None
     is_first_order: bool
 
 

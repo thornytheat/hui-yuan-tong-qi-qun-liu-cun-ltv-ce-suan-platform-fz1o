@@ -43,9 +43,9 @@
           <span class="band__sub mono">2025-11 → 2026-10</span>
         </div>
         <div class="band__cell">
-          <span class="label">订单事实</span>
+          <span class="label">消费 / 充值 / 退款</span>
           <span class="band__value mono">{{ integer(matrix.stats.orders) }}</span>
-          <span class="band__sub mono">{{ integer(matrix.stats.members) }} 会员</span>
+          <span class="band__sub mono">充 {{ integer(matrix.stats.recharge_orders) }} · 退 {{ integer(matrix.stats.refund_orders) }}</span>
         </div>
         <div class="band__cell">
           <span class="label">有效 / 总格</span>
@@ -53,16 +53,20 @@
           <span class="band__sub mono">右删失 {{ matrix.stats.cells_censored }} 格</span>
         </div>
         <div class="band__cell">
-          <span class="label">累计人均营收</span>
+          <span class="label">净营收（人均）</span>
           <span class="band__value mono">{{ money(matrix.stats.cumulative_arpu) }}</span>
-          <span class="band__sub mono">含礼盒/咖啡豆品类</span>
+          <span class="band__sub mono">合计 {{ money(matrix.stats.net_revenue_total) }}</span>
         </div>
         <div class="band__cell band__cell--note">
-          <span class="label">快照口径</span>
-          <span class="band__value mono">{{ matrix.snapshot_month }}-30</span>
-          <span class="band__sub mono">M0..M{{ matrix.months - 1 }}</span>
+          <span class="label">待消费余额</span>
+          <span class="band__value mono" data-test="matrix-pending">{{ money(matrix.stats.pending_balance_total) }}</span>
+          <span class="band__sub mono" :class="{ 'is-mismatch': !matrix.reconcile.balanced }">
+            对账差异 {{ money(matrix.reconcile.reconcile_diff, 2) }}
+          </span>
         </div>
       </section>
+
+      <WalletPanel :wallet="matrix.reconcile" />
 
       <div class="layout">
         <RetentionHeatTable :payload="matrix" :highlight="focusMonth" @select="openCohort" />
@@ -82,23 +86,27 @@
                 </RouterLink>
               </li>
             </ul>
-            <p class="side__note">人均累计营收 = 该群观察期累计营收 / 群规模。</p>
+            <p class="side__note">人均净营收 = 该群观察期累计净营收 / 群规模（不含待消费余额）。</p>
           </section>
 
           <section class="panel panel--tight">
             <div class="eyebrow">口径提示</div>
             <dl class="defs">
               <div>
-                <dt>M0</dt>
+                <dt>活跃</dt>
                 <dd>{{ matrix.notes.matrix }}</dd>
+              </div>
+              <div>
+                <dt>净营收</dt>
+                <dd>{{ matrix.notes.revenue }}</dd>
+              </div>
+              <div>
+                <dt>余额</dt>
+                <dd>{{ matrix.notes.balance }}</dd>
               </div>
               <div>
                 <dt>右删失</dt>
                 <dd>{{ matrix.notes.censor }}</dd>
-              </div>
-              <div>
-                <dt>低样本</dt>
-                <dd>{{ matrix.notes.low_sample }}</dd>
               </div>
             </dl>
           </section>
@@ -129,6 +137,7 @@ import PageHeader from '../components/common/PageHeader.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import ErrorNotice from '../components/common/ErrorNotice.vue'
 import RetentionHeatTable from '../components/business/RetentionHeatTable.vue'
+import WalletPanel from '../components/business/WalletPanel.vue'
 import { useCohortStore } from '../stores/cohortStore'
 import { useAuthStore } from '../stores/authStore'
 import { EMPTY_HINTS } from '../constants/messages'
@@ -183,6 +192,7 @@ onMounted(load)
 .band__value { font-size: 20px; color: var(--espresso); }
 .band__den { font-size: 12px; color: var(--coffee-3); }
 .band__sub { font-size: 10px; color: var(--coffee-3); }
+.band__sub.is-mismatch { color: var(--brick); font-weight: 600; }
 
 .layout {
   display: grid;
